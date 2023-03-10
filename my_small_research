@@ -1,0 +1,406 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import openpyxl
+import math
+import scipy.stats
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_percentage_error
+from sklearn.preprocessing import PolynomialFeatures
+
+#datasets. I got them from World Bank Database,
+gdp_per_capita = pd.read_excel('D:/GDP_per_capita.xlsx')
+hdi = pd.read_excel('D:HDI_final.xlsx')
+square = pd.read_excel('D:/Land_area.xlsx')
+service = pd.read_excel('D:/Service.xlsx')
+spi = pd.read_excel('D:/SPI.xlsx')
+wb = pd.read_excel('D:/WB_income_classification.xlsx')
+data = [gdp_per_capita, hdi, square, service, spi, wb]
+
+#firsly, let's get some initial information about our date
+for i in data:
+  print(i.head(10))
+  print(i.describe())
+  print(i.info())
+
+#ok, i find some NaN strings, I will delete them
+for i in data:
+  i.dropna(inplace=True)
+
+#I would like to know about the type of the distribution of the data. We need to know if we can use regular statistical tests or not.
+#At the beginning, I used Sturges' rule, but after testing I realized this rule doesn't work well.
+fig, axs = plt.subplots(2, 3)
+fig.suptitle('Frequency distribution', fontsize = 15)
+#n = math.ceil(1+math.log2(gdp_per_capita['2020'].count()))
+n = 30
+axs[0][0].hist(gdp_per_capita['2020'], bins=n)
+axs[0][0].set_title('GDP per capita for 2020', fontsize = 8)
+axs[0][0].axvline(x=gdp_per_capita['2020'].mean(), color='r')
+axs[0][0].axvline(x=gdp_per_capita['2020'].median(), color='y')
+
+#n = math.ceil(1+math.log2(hdi[2020].count()))
+n = 35
+axs[0][1].hist(hdi[2020], bins=n)
+axs[0][1].set_title('HDI for 2020', fontsize = 8)
+axs[0][1].axvline(x=hdi[2020].mean(), color='r')
+axs[0][1].axvline(x=hdi[2020].median(), color='y')
+
+n = math.ceil(1+math.log2(square['2020'].count()))
+axs[0][2].hist(square['2020'], bins=n)
+axs[0][2].set_title('Area in km2 for 2020', fontsize = 8)
+axs[0][2].axvline(x=square['2020'].mean(), color='r')
+axs[0][2].axvline(x=square['2020'].median(), color='y')
+
+#n = math.ceil(1+math.log2(service['2020'].count()))
+n = 30
+axs[1][0].hist(service['2020'], bins=n)
+axs[1][0].set_title('Share of services in % of GDP for 2020', fontsize = 8)
+axs[1][0].axvline(x=service['2020'].mean(), color='r')
+axs[1][0].axvline(x=service['2020'].median(), color='y')
+
+n = math.ceil(1+math.log2(spi[2022].count()))
+axs[1][1].hist(spi[2022], bins=n)
+axs[1][1].set_title('ISP for 2022', fontsize = 8)
+axs[1][1].axvline(x=spi[2022].mean(), color='r')
+axs[1][1].axvline(x=spi[2022].median(), color='y')
+
+fig.tight_layout()
+plt.show()
+# We get four graphs with distributions, medians and averages on them. They don't look normal to me, but let's check later.
+
+# Remove outliers to improve the model
+pd.set_option('display.max_columns', None)
+gdp_per_capita.set_index('Country Name', inplace=True)
+square_cop = square.copy()
+
+square_cop.loc[square_cop['2020'] > 2000000] = np.nan
+square_cop.dropna(inplace=True)
+
+square_cop.set_index('Country Name', inplace=True)
+square_cop.columns = ['km2']
+
+# Also, I deleted unnecessary columns
+gdp_per_capita_reform = gdp_per_capita.copy()
+del gdp_per_capita_reform[gdp_per_capita_reform.columns[1]]   
+del gdp_per_capita_reform[gdp_per_capita_reform.columns[0]]   
+gdp_per_capita_reform.columns = ['GDP per capita (current US$)']    
+
+# I join DateFrames (they are the first pair of regression analysis)
+cor_frame_1 = gdp_per_capita_reform.join(square_cop, on='Country Name', how='inner')   
+pd.set_option('display.max_rows', None)
+"""
+cor_frame_1.drop(labels = ['Africa Eastern and Southern', 'Africa Western and Central', 'Arab World',
+                           'Central African Republic', 'Central Europe and the Baltics',
+                           'East Asia & Pacific (excluding high income)', 'Early-demographic dividend',
+                           'East Asia & Pacific', 'Europe & Central Asia (excluding high income)',
+                           'Europe & Central Asia', 'Euro area', 'European Union',
+                           'High income', 'Heavily indebted poor countries (HIPC)', 'IBRD only', 'IDA & IBRD total',
+                           'IDA total', 'IDA blend', 'IDA only', 'Latin America & Caribbean (excluding high income)',
+                           'Latin America & Caribbean', 'Least developed countries: UN classification',
+                           'Low income', 'Lower middle income', 'Low & middle income', 'Late-demographic dividend',
+                           'Middle East & North Africa', 'Middle income', 'Middle East & North Africa (excluding high income)',
+                           'North America', 'OECD members', 'Pre-demographic dividend', 'Post-demographic dividend',
+                           'Sub-Saharan Africa (excluding high income)', 'Sub-Saharan Africa', 'East Asia & Pacific (IDA & IBRD countries)',
+                           'Europe & Central Asia (IDA & IBRD countries)', 'Middle East & North Africa (IDA & IBRD countries)',
+                           'South Asia (IDA & IBRD)', 'Sub-Saharan Africa (IDA & IBRD countries)', 'Upper middle income',
+                           'World', 'Latin America & the Caribbean (IDA & IBRD countries)'],axis = 0, inplace = True)
+"""
+#through the operation above, we removed all those unnecessary lines that store aggregated data, and not by country
+
+# Delete some more outliners
+cor_frame_1.loc[cor_frame_1['GDP per capita (current US$)'] > 150000] = np.nan
+cor_frame_1.dropna(inplace=True)
+
+# Construct a linear pair regression of GDP per capita from the area of countries
+x1 = cor_frame_1[['km2']].values
+y1 = cor_frame_1['GDP per capita (current US$)'].values
+
+# prepare other data for regression analysis
+del hdi[hdi.columns[2]]
+hdi.columns = ['Country Name', 'HDI']
+hdi.set_index('Country Name', inplace=True)
+square_for_hdi = square.copy()
+
+square_for_hdi.loc[square_for_hdi['2020'] > 1500000] = np.nan
+square_for_hdi.dropna(inplace=True)
+hdi.loc[hdi['HDI'] < 0.45] = np.nan
+hdi.dropna(inplace=True)
+
+square_for_hdi.set_index('Country Name', inplace=True)
+square_for_hdi.columns = ['km2']
+
+cor_frame_2 = hdi.join(square_for_hdi, on='Country Name', how='inner')
+x2 = cor_frame_2[['km2']].values
+y2 = cor_frame_2['HDI'].values
+
+spi.columns = ['Country Name', 'SPI']
+spi.set_index('Country Name', inplace=True)
+square_for_spi = square.copy()
+square_for_spi.loc[square_for_spi['2020'] > 600000] = np.nan
+square_for_spi.dropna(inplace=True)
+square_for_spi.set_index('Country Name', inplace=True)
+square_for_spi.columns = ['km2']
+cor_frame_3 = spi.join(square_for_spi, on='Country Name', how='inner')
+
+x3 = cor_frame_3[['km2']].values
+y3 = cor_frame_3['SPI'].values
+
+del service[service.columns[2]]
+del service[service.columns[1]]
+square_for_service = square.copy()
+
+square_for_service.loc[square_for_service['2020'] > 3000000] = np.nan
+square_for_service.dropna(inplace=True)
+service.loc[service['2021'] < 20] = np.nan
+service.dropna(inplace=True)
+
+square_for_service.set_index('Country Name', inplace=True)
+square_for_service.columns = ['km2']
+service.columns = ['Country Name', 'Services, value added (% of GDP)']
+service.set_index('Country Name', inplace=True)
+
+cor_frame_4 = service.join(square_for_service, on='Country Name', how='inner')
+'''
+cor_frame_4.drop(labels = ['Africa Eastern and Southern', 'Africa Western and Central', 'Arab World',
+                           'Central African Republic', 'Central Europe and the Baltics',
+                           'East Asia & Pacific (excluding high income)', 'Early-demographic dividend',
+                           'East Asia & Pacific', 'Europe & Central Asia (excluding high income)',
+                           'Europe & Central Asia', 'Euro area', 'European Union',
+                           'High income', 'Heavily indebted poor countries (HIPC)', 'IBRD only', 'IDA & IBRD total',
+                           'IDA total', 'IDA blend', 'IDA only', 'Latin America & Caribbean (excluding high income)',
+                           'Latin America & Caribbean', 'Least developed countries: UN classification',
+                           'Low income', 'Lower middle income', 'Low & middle income', 'Late-demographic dividend',
+                           'Middle East & North Africa', 'Middle income', 'Middle East & North Africa (excluding high income)',
+                           'North America', 'OECD members', 'Pre-demographic dividend', 'Post-demographic dividend',
+                           'Sub-Saharan Africa (excluding high income)', 'Sub-Saharan Africa', 'East Asia & Pacific (IDA & IBRD countries)',
+                           'Europe & Central Asia (IDA & IBRD countries)', 'Middle East & North Africa (IDA & IBRD countries)',
+                           'South Asia (IDA & IBRD)', 'Sub-Saharan Africa (IDA & IBRD countries)', 'Upper middle income',
+                           'World', 'Latin America & the Caribbean (IDA & IBRD countries)'],axis = 0, inplace = True)
+'''
+x4 = cor_frame_4[['km2']].values
+y4 = cor_frame_4['Services, value added (% of GDP)'].values
+
+# We will build regression lines of different functions separately for each pair and display them on the chart
+answers = {}
+
+def mape (y_true, y_pred):      # create a function to calculate the average approximation error
+    return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+
+X = x1
+Y = y1
+regr = LinearRegression()
+quadratic = PolynomialFeatures(degree=2)
+cubic = PolynomialFeatures(degree=3)
+x_quad = quadratic.fit_transform(X)
+x_cubic = cubic.fit_transform(X)
+x_fit = np.arange(X.min(), X.max(), 1)[:, np.newaxis]
+
+regr = regr.fit(X, Y)
+y_lin_fit = regr.predict(x_fit)
+linear_r2 = r2_score(Y, regr.predict(X))
+linear_MSE = mean_squared_error(Y, regr.predict(X))
+linear_MAPE = mape(Y, regr.predict(X))
+
+regr = regr.fit(x_quad, Y)
+y_quad_fit = regr.predict(quadratic.fit_transform(x_fit))
+quadratic_r2 = r2_score(Y, regr.predict(x_quad))
+quadratic_MSE = mean_squared_error(Y, regr.predict(x_quad))
+quadratic_MAPE = mape(Y, regr.predict(x_quad))
+
+regr = regr.fit(x_cubic, Y)
+y_cubic_fit = regr.predict(cubic.fit_transform(x_fit))
+cubic_r2 = r2_score(Y, regr.predict(x_cubic))
+cubic_MSE = mean_squared_error(Y, regr.predict(x_cubic))
+cubic_MAPE = mape(Y, regr.predict(x_cubic))
+
+fig2, axs2 = plt.subplots(2, 2)
+
+axs2[0][0].scatter(X, Y)
+axs2[0][0].plot(x_fit, y_lin_fit, color='blue', lw=2,linestyle=':', label='linear, $R^2={:.4f}$'.format(linear_r2))
+axs2[0][0].plot(x_fit, y_quad_fit, color='red', lw=2, linestyle='-', label='quadratic, $R^2={:.4f}$'.format(quadratic_r2))
+axs2[0][0].plot(x_fit, y_cubic_fit, color='green', lw=2, linestyle='--', label='cubic, $R^2={:.4f}$'.format(cubic_r2))
+axs2[0][0].set_xlabel('Area of the country in km2')
+axs2[0][0].set_ylabel('GDP per capita')
+axs2[0][0].legend(loc = 'upper right')
+
+
+answers['GDP per capita'] = [linear_r2, linear_MSE, linear_MAPE, quadratic_r2, quadratic_MSE, quadratic_MAPE,
+                                  cubic_r2, cubic_MSE, cubic_MAPE]
+
+X = x2
+Y = y2
+regr = LinearRegression()
+quadratic = PolynomialFeatures(degree=2)
+cubic = PolynomialFeatures(degree=3)
+x_quad = quadratic.fit_transform(X)
+x_cubic = cubic.fit_transform(X)
+x_fit = np.arange(X.min(), X.max(), 1)[:, np.newaxis]
+
+regr = regr.fit(X, Y)
+y_lin_fit = regr.predict(x_fit)
+linear_r2 = r2_score(Y, regr.predict(X))
+linear_MSE = mean_squared_error(Y, regr.predict(X))
+linear_MAPE = mape(Y, regr.predict(X))
+
+regr = regr.fit(x_quad, Y)
+y_quad_fit = regr.predict(quadratic.fit_transform(x_fit))
+quadratic_r2 = r2_score(Y, regr.predict(x_quad))
+quadratic_MSE = mean_squared_error(Y, regr.predict(x_quad))
+quadratic_MAPE = mape(Y, regr.predict(x_quad))
+
+regr = regr.fit(x_cubic, Y)
+y_cubic_fit = regr.predict(cubic.fit_transform(x_fit))
+cubic_r2 = r2_score(Y, regr.predict(x_cubic))
+cubic_MSE = mean_squared_error(Y, regr.predict(x_cubic))
+cubic_MAPE = mape(Y, regr.predict(x_cubic))
+
+axs2[0][1].scatter(X, Y)
+axs2[0][1].plot(x_fit, y_lin_fit, color='blue', lw=2,linestyle=':', label='linear, $R^2={:.4f}$'.format(linear_r2))
+axs2[0][1].plot(x_fit, y_quad_fit, color='red', lw=2, linestyle='-', label='quadratic, $R^2={:.4f}$'.format(quadratic_r2))
+axs2[0][1].plot(x_fit, y_cubic_fit, color='green', lw=2, linestyle='--', label='cubic, $R^2={:.4f}$'.format(cubic_r2))
+axs2[0][1].legend(loc = 'upper right')
+axs2[0][1].set_xlabel('Area of the country in km2')
+axs2[0][1].set_ylabel('Human Development Index')
+
+answers['Human Development Index'] = [linear_r2, linear_MSE, linear_MAPE, quadratic_r2, quadratic_MSE, quadratic_MAPE,
+                                  cubic_r2, cubic_MSE, cubic_MAPE]
+
+X = x3
+Y = y3
+regr = LinearRegression()
+quadratic = PolynomialFeatures(degree=2)
+cubic = PolynomialFeatures(degree=3)
+x_quad = quadratic.fit_transform(X)
+x_cubic = cubic.fit_transform(X)
+x_fit = np.arange(X.min(), X.max(), 1)[:, np.newaxis]
+
+regr = regr.fit(X, Y)
+y_lin_fit = regr.predict(x_fit)
+linear_r2 = r2_score(Y, regr.predict(X))
+linear_MSE = mean_squared_error(Y, regr.predict(X))
+linear_MAPE = mape(Y, regr.predict(X))
+
+regr = regr.fit(x_quad, Y)
+y_quad_fit = regr.predict(quadratic.fit_transform(x_fit))
+quadratic_r2 = r2_score(Y, regr.predict(x_quad))
+quadratic_MSE = mean_squared_error(Y, regr.predict(x_quad))
+quadratic_MAPE = mape(Y, regr.predict(x_quad))
+
+regr = regr.fit(x_cubic, Y)
+y_cubic_fit = regr.predict(cubic.fit_transform(x_fit))
+cubic_r2 = r2_score(Y, regr.predict(x_cubic))
+cubic_MSE = mean_squared_error(Y, regr.predict(x_cubic))
+cubic_MAPE = mape(Y, regr.predict(x_cubic))
+
+axs2[1][0].scatter(X, Y)
+axs2[1][0].plot(x_fit, y_lin_fit, color='blue', lw=2,linestyle=':', label='linear, $R^2={:.4f}$'.format(linear_r2))
+axs2[1][0].plot(x_fit, y_quad_fit, color='red', lw=2, linestyle='-', label='quadratic, $R^2={:.4f}$'.format(quadratic_r2))
+axs2[1][0].plot(x_fit, y_cubic_fit, color='green', lw=2, linestyle='--', label='cubic, $R^2={:.4f}$'.format(cubic_r2))
+axs2[1][0].legend(loc = 'lower right')
+axs2[1][0].set_xlabel('Area of the country in km2')
+axs2[1][0].set_ylabel('Index of social progress')
+
+answers['Index of social progress'] = [linear_r2, linear_MSE, linear_MAPE, quadratic_r2, quadratic_MSE, quadratic_MAPE,
+                                  cubic_r2, cubic_MSE, cubic_MAPE]
+
+X = x4
+Y = y4
+regr = LinearRegression()
+quadratic = PolynomialFeatures(degree=2)
+cubic = PolynomialFeatures(degree=3)
+x_quad = quadratic.fit_transform(X)
+x_cubic = cubic.fit_transform(X)
+x_fit = np.arange(X.min(), X.max(), 1)[:, np.newaxis]
+
+regr = regr.fit(X, Y)
+y_lin_fit = regr.predict(x_fit)
+linear_r2 = r2_score(Y, regr.predict(X))
+linear_MSE = mean_squared_error(Y, regr.predict(X))
+linear_MAPE = mape(Y, regr.predict(X))
+
+regr = regr.fit(x_quad, Y)
+y_quad_fit = regr.predict(quadratic.fit_transform(x_fit))
+quadratic_r2 = r2_score(Y, regr.predict(x_quad))
+quadratic_MSE = mean_squared_error(Y, regr.predict(x_quad))
+quadratic_MAPE = mape(Y, regr.predict(x_quad))
+
+regr = regr.fit(x_cubic, Y)
+y_cubic_fit = regr.predict(cubic.fit_transform(x_fit))
+cubic_r2 = r2_score(Y, regr.predict(x_cubic))
+cubic_MSE = mean_squared_error(Y, regr.predict(x_cubic))
+cubic_MAPE = mape(Y, regr.predict(x_cubic))
+
+axs2[1][1].scatter(X, Y)
+axs2[1][1].plot(x_fit, y_lin_fit, color='blue', lw=2,linestyle=':', label='linear, $R^2={:.4f}$'.format(linear_r2))
+axs2[1][1].plot(x_fit, y_quad_fit, color='red', lw=2, linestyle='-', label='quadratic, $R^2={:.4f}$'.format(quadratic_r2))
+axs2[1][1].plot(x_fit, y_cubic_fit, color='green', lw=2, linestyle='--', label='cubic, $R^2={:.4f}$'.format(cubic_r2))
+axs2[1][1].legend(loc = 'upper right')
+axs2[1][1].set_xlabel('Area of the country in km2')
+axs2[1][1].set_ylabel('The share of the third sector in GDP')
+
+answers['The share of the third sector in GDP'] = [linear_r2, linear_MSE, linear_MAPE, quadratic_r2, quadratic_MSE, quadratic_MAPE,
+                                  cubic_r2, cubic_MSE, cubic_MAPE]
+
+# Checking data normality with Shapiro-Wilk test
+def test_shapiro(series):
+    stats, p = scipy.stats.shapiro(series)
+    alpha = 0.05
+    if p > alpha:
+        return "The data is normally distributed"
+    else:
+        return "The data isn't normally distributed"
+series_list = [cor_frame_1['GDP per capita (current US$)'], cor_frame_1['km2'], cor_frame_2['HDI'], cor_frame_2['km2'],
+               cor_frame_3['SPI'], cor_frame_3['km2'], cor_frame_4['Services, value added (% of GDP)'], cor_frame_4['km2']]
+for i in series_list:
+    print(test_shapiro(i))
+
+# The Shapiro-Wick test showed that almost all of our data don't follow the normal distribution.
+
+# Find the correlation coefficients for linear regressions
+coef_lin_1 = cor_frame_1.corr()
+coef_lin_1 = coef_lin_1.iloc[0]['km2']
+
+coef_lin_2 = cor_frame_2.corr()
+coef_lin_2 = coef_lin_2.iloc[0]['km2']
+
+coef_lin_3 = cor_frame_3.corr()
+coef_lin_3 = coef_lin_3.iloc[0]['km2']
+
+coef_lin_4 = cor_frame_4.corr()
+coef_lin_4 = coef_lin_4.iloc[0]['km2']
+
+coef_lin = [coef_lin_1, coef_lin_2, coef_lin_3, coef_lin_4]
+
+fig2.set_size_inches(9, 6)
+fig2.tight_layout()
+plt.show()
+
+fig2.savefig('C:/results_of_statexplor.png')
+results = {'GDP per capita by area': {'Linear': {'R^2': answers['GDP per capita by area'][0], 'MSE': answers['GDP per capita by area'][1],
+                                                  'MAPE': answers['GDP per capita by area'][2]},
+                                     'Quadratic': {'R^2': answers['GDP per capita by area'][3], 'MSE': answers['GDP per capita by area'][4],
+                                                  'MAPE': answers['GDP per capita by area'][5]},
+                                     'Cubic': {'R^2': answers['GDP per capita by area'][6], 'MSE': answers['GDP per capita by area'][7],
+                                                  'MAPE': answers['GDP per capita by area'][8]}},
+           'HDI from km2': {'Linear': {'R^2': answers['HDI from km2'][0], 'MSE': answers['HDI from km2'][1],
+                                                  'MAPE': answers['HDI from km2'][2]},
+                                     'Quadratic': {'R^2': answers['HDI from km2'][3], 'MSE': answers['HDI from km2'][4],
+                                                  'MAPE': answers['HDI from km2'][5]},
+                                     'v': {'R^2': answers['HDI from km2'][6], 'MSE': answers['HDI from km2'][7],
+                                                  'MAPE': answers['HDI from km2'][8]}},
+           'ISP from km2': {'Linear': {'R^2': answers['ISP from km2'][0], 'MSE': answers['ISP from km2'][1],
+                                                  'MAPE': answers['ISP from km2'][2]},
+                                     'Quadratic': {'R^2': answers['ISP from km2'][3], 'MSE': answers['ISP from km2'][4],
+                                                  'MAPE': answers['ISP from km2'][5]},
+                                     'Cubic': {'R^2': answers['ISP from km2'][6], 'MSE': answers['ISP from km2'][7],
+                                                  'MAPE': answers['ISP from km2'][8]}},
+           'The share of the third sector in GDP from km2': {'Linear': {'R^2': answers['The share of the third sector in GDP from km2'][0], 'MSE': answers[The share of the third sector in GDP from km2'][1],
+                                                  'MAPE': answers['The share of the third sector in GDP from km2'][2]},
+                                     'Quadratic': {'R^2': answers['The share of the third sector in GDP from km2'][3], 'MSE': answers['The share of the third sector in GDP from km2'][4],
+                                                  'MAPE': answers['Частка третього сектору у ВВП від км2'][5]},
+                                     'Cubic': {'R^2': answers['The share of the third sector in GDP from km2'][6], 'MSE': answers['The share of the third sector in GDP from km2'][7],
+                                                  'MAPE': answers['The share of the third sector in GDP from km2'][8]}}}
+
+res_frame = pd.DataFrame(results)
+res_frame.to_excel('C:/results_table.xlsx')
+
